@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="es" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PodSync — Reproductor de Podcasts</title>
+
+  <!-- Tailwind CSS v3 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              50:  '#f0fdf4',
+              400: '#4ade80',
+              500: '#22c55e',
+              600: '#16a34a',
+            },
+            surface: {
+              900: '#0a0a0f',
+              800: '#111118',
+              700: '#1a1a26',
+              600: '#23233a',
+              500: '#2e2e4a',
+            }
+          },
+          fontFamily: {
+            display: ['Inter', 'system-ui', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+
+  <!-- SweetAlert2 -->
+  <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Estilos propios -->
+  <link rel="stylesheet" href="styles.css" />
+</head>
+
+<body class="bg-surface-900 text-white font-display min-h-screen antialiased">
+
+  <!-- ── HEADER ─────────────────────────────────────── -->
+  <header class="border-b border-surface-600 px-6 py-4 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 bg-brand-500 rounded-lg flex items-center justify-center">
+        <i data-lucide="radio" class="w-4 h-4 text-white"></i>
+      </div>
+      <span class="font-semibold text-lg tracking-tight">PodSync</span>
+      <span class="text-xs text-gray-500 bg-surface-600 px-2 py-0.5 rounded-full">Local Sync</span>
+    </div>
+
+    <!-- Indicador de sincronización -->
+    <div id="sync-indicator" class="sync-indicator hidden flex items-center gap-2 text-xs text-brand-400 bg-brand-500/10 border border-brand-500/20 px-3 py-1.5 rounded-full">
+      <span class="sync-dot"></span>
+      <span id="sync-text">Sincronizando...</span>
+    </div>
+  </header>
+
+  <!-- ── MAIN LAYOUT ────────────────────────────────── -->
+  <main class="max-w-4xl mx-auto px-4 py-8 space-y-6">
+
+    <!-- ── SELECTOR DE DISPOSITIVO ───────────────────── -->
+    <section>
+      <p class="text-xs text-gray-500 uppercase tracking-widest mb-3 font-medium">Dispositivo activo</p>
+      <div class="flex gap-3 flex-wrap" id="device-selector">
+
+        <button data-device="mobile" class="device-btn active" onclick="App.switchDevice('mobile')">
+          <i data-lucide="smartphone" class="w-4 h-4"></i>
+          <span>Celular</span>
+        </button>
+
+        <button data-device="tablet" class="device-btn" onclick="App.switchDevice('tablet')">
+          <i data-lucide="tablet" class="w-4 h-4"></i>
+          <span>Tablet</span>
+        </button>
+
+        <button data-device="desktop" class="device-btn" onclick="App.switchDevice('desktop')">
+          <i data-lucide="monitor" class="w-4 h-4"></i>
+          <span>Computadora</span>
+        </button>
+
+      </div>
+    </section>
+
+    <!-- ── LISTA DE EPISODIOS ─────────────────────────── -->
+    <section>
+      <p class="text-xs text-gray-500 uppercase tracking-widest mb-3 font-medium">Episodios</p>
+      <div class="grid gap-2" id="episode-list">
+        <!-- Se genera dinámicamente por JS -->
+      </div>
+    </section>
+
+    <!-- ── REPRODUCTOR PRINCIPAL ──────────────────────── -->
+    <section id="player-card" class="player-card rounded-2xl p-6 space-y-5 hidden">
+
+      <!-- Info del episodio activo -->
+      <div class="flex items-start gap-4">
+        <div id="player-cover" class="w-16 h-16 rounded-xl flex-shrink-0 flex items-center justify-center text-2xl cover-placeholder">
+          🎙️
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="text-xs text-brand-400 font-medium mb-0.5" id="player-podcast-name">—</p>
+          <h2 class="font-semibold text-lg leading-tight truncate" id="player-episode-title">—</h2>
+          <p class="text-sm text-gray-400 mt-0.5" id="player-episode-meta">—</p>
+        </div>
+      </div>
+
+      <!-- Barra de progreso -->
+      <div class="space-y-2">
+        <div class="relative h-1.5 bg-surface-500 rounded-full cursor-pointer group" id="progress-bar-container" onclick="App.seekTo(event)">
+          <div id="progress-bar-fill" class="h-full bg-brand-500 rounded-full relative transition-all duration-300" style="width: 0%">
+            <div class="progress-thumb"></div>
+          </div>
+        </div>
+        <div class="flex justify-between text-xs text-gray-500 font-mono">
+          <span id="time-current">0:00</span>
+          <span id="time-total">0:00</span>
+        </div>
+      </div>
+
+      <!-- Controles -->
+      <div class="flex items-center justify-center gap-6">
+
+        <button class="control-btn-sm" onclick="App.skipBack()" title="Retroceder 15s">
+          <i data-lucide="rotate-ccw" class="w-4 h-4"></i>
+          <span class="text-[9px] font-bold -mt-0.5">15</span>
+        </button>
+
+        <button id="play-pause-btn" class="control-btn-main" onclick="App.togglePlayPause()">
+          <i data-lucide="play" class="w-6 h-6 ml-0.5" id="play-icon"></i>
+        </button>
+
+        <button class="control-btn-sm" onclick="App.skipForward()" title="Avanzar 30s">
+          <i data-lucide="rotate-cw" class="w-4 h-4"></i>
+          <span class="text-[9px] font-bold -mt-0.5">30</span>
+        </button>
+
+      </div>
+
+      <!-- Acciones secundarias -->
+      <div class="flex items-center justify-between pt-2 border-t border-surface-600">
+
+        <!-- Velocidad de reproducción -->
+        <button id="speed-btn" class="speed-btn" onclick="App.cycleSpeed()">
+          <span id="speed-label">1×</span>
+        </button>
+
+        <!-- Guardar progreso manualmente -->
+        <button class="flex items-center gap-2 text-xs text-gray-400 hover:text-white transition-colors px-3 py-1.5 rounded-lg hover:bg-surface-600" onclick="App.saveProgressManual()">
+          <i data-lucide="cloud-upload" class="w-3.5 h-3.5"></i>
+          <span>Guardar ahora</span>
+        </button>
+
+        <!-- Simular cierre de app -->
+        <button class="flex items-center gap-2 text-xs text-gray-400 hover:text-red-400 transition-colors px-3 py-1.5 rounded-lg hover:bg-surface-600" onclick="App.closeApp()">
+          <i data-lucide="x-circle" class="w-3.5 h-3.5"></i>
+          <span>Cerrar app</span>
+        </button>
+
+      </div>
+    </section>
+
+    <!-- ── ESTADO VACÍO (sin episodio activo) ─────────── -->
+    <div id="empty-state" class="text-center py-16 text-gray-600">
+      <i data-lucide="headphones" class="w-12 h-12 mx-auto mb-4 opacity-30"></i>
+      <p class="text-sm">Seleccioná un episodio para comenzar</p>
+    </div>
+
+    <!-- ── LOG DE ACTIVIDAD ───────────────────────────── -->
+    <section>
+      <p class="text-xs text-gray-500 uppercase tracking-widest mb-3 font-medium">Actividad reciente</p>
+      <div id="activity-log" class="space-y-1 max-h-48 overflow-y-auto pr-1">
+        <!-- Entradas dinámicas -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Script principal -->
+  <script src="app.js"></script>
+
+</body>
+</html>

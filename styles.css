@@ -1,0 +1,297 @@
+/* ═══════════════════════════════════════════════
+   styles.css — PodSync Podcast Player
+   Dark, audiophile aesthetic
+═══════════════════════════════════════════════ */
+
+/* ── BASE ──────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  background-color: #0a0a0f;
+  color: #f1f5f9;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+
+/* Scrollbar sutil */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2e2e4a; border-radius: 2px; }
+
+/* ── DEVICE SELECTOR ───────────────────────────── */
+.device-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  border-radius: 9999px;
+  border: 1px solid #2e2e4a;
+  background: #1a1a26;
+  color: #94a3b8;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.device-btn:hover {
+  border-color: #22c55e;
+  color: #22c55e;
+}
+
+.device-btn.active {
+  background: rgba(34, 197, 94, 0.1);
+  border-color: rgba(34, 197, 94, 0.4);
+  color: #4ade80;
+}
+
+/* ── EPISODE CARDS ─────────────────────────────── */
+.episode-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.875rem 1rem;
+  background: #111118;
+  border: 1px solid #1a1a26;
+  border-radius: 0.75rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  width: 100%;
+  text-align: left;
+}
+
+.episode-card:hover {
+  background: #1a1a26;
+  border-color: #2e2e4a;
+}
+
+.episode-card.active {
+  background: rgba(34, 197, 94, 0.06);
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.episode-card.active .episode-title {
+  color: #4ade80;
+}
+
+.episode-cover {
+  width: 3rem;
+  height: 3rem;
+  border-radius: 0.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.25rem;
+  flex-shrink: 0;
+  background: #1a1a26;
+}
+
+.episode-title {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 24rem;
+}
+
+.episode-meta {
+  font-size: 0.75rem;
+  color: #64748b;
+  margin-top: 0.125rem;
+}
+
+.episode-progress-bar {
+  height: 2px;
+  background: #2e2e4a;
+  border-radius: 1px;
+  margin-top: 0.375rem;
+  overflow: hidden;
+}
+
+.episode-progress-fill {
+  height: 100%;
+  background: linear-gradient(to right, #22c55e, #4ade80);
+  border-radius: 1px;
+  transition: width 0.4s ease;
+}
+
+.episode-badge {
+  font-size: 0.625rem;
+  padding: 0.125rem 0.5rem;
+  border-radius: 9999px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.episode-badge.new {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.25);
+}
+
+.episode-badge.progress {
+  background: rgba(251, 191, 36, 0.1);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.2);
+}
+
+.episode-badge.finished {
+  background: rgba(100, 116, 139, 0.1);
+  color: #64748b;
+  border: 1px solid rgba(100, 116, 139, 0.2);
+}
+
+/* ── PLAYER CARD ───────────────────────────────── */
+.player-card {
+  background: linear-gradient(135deg, #111118 0%, #1a1a26 100%);
+  border: 1px solid #2e2e4a;
+  box-shadow: 0 24px 48px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(34, 197, 94, 0.05);
+}
+
+.cover-placeholder {
+  background: linear-gradient(135deg, #1a1a26, #2e2e4a);
+}
+
+/* ── PROGRESS BAR ──────────────────────────────── */
+#progress-bar-container:hover #progress-bar-fill {
+  filter: brightness(1.1);
+}
+
+.progress-thumb {
+  position: absolute;
+  right: -5px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 12px;
+  height: 12px;
+  background: white;
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.3);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+#progress-bar-container:hover .progress-thumb {
+  opacity: 1;
+}
+
+/* ── CONTROLS ──────────────────────────────────── */
+.control-btn-main {
+  width: 3.5rem;
+  height: 3.5rem;
+  background: #22c55e;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #0a0a0f;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.control-btn-main:hover {
+  background: #4ade80;
+  transform: scale(1.05);
+}
+
+.control-btn-main:active {
+  transform: scale(0.97);
+}
+
+.control-btn-sm {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  gap: 0;
+}
+
+.control-btn-sm:hover {
+  color: white;
+  background: #1a1a26;
+}
+
+.speed-btn {
+  padding: 0.25rem 0.625rem;
+  border-radius: 0.375rem;
+  background: #1a1a26;
+  border: 1px solid #2e2e4a;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: 'Inter', monospace;
+}
+
+.speed-btn:hover {
+  border-color: #22c55e;
+  color: #4ade80;
+}
+
+/* ── SYNC INDICATOR ────────────────────────────── */
+.sync-indicator {
+  animation: fadeIn 0.3s ease;
+}
+
+.sync-dot {
+  width: 6px;
+  height: 6px;
+  background: #22c55e;
+  border-radius: 50%;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%       { opacity: 0.5; transform: scale(0.8); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── ACTIVITY LOG ──────────────────────────────── */
+.log-entry {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.375rem 0.75rem;
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+  animation: slideIn 0.3s ease;
+}
+
+.log-entry.save  { color: #4ade80; background: rgba(34, 197, 94, 0.06); }
+.log-entry.load  { color: #60a5fa; background: rgba(96, 165, 250, 0.06); }
+.log-entry.error { color: #f87171; background: rgba(248, 113, 113, 0.06); }
+.log-entry.info  { color: #94a3b8; background: rgba(148, 163, 184, 0.06); }
+
+.log-entry .log-time {
+  font-family: 'Inter', monospace;
+  color: #475569;
+  flex-shrink: 0;
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ── UTILIDADES ────────────────────────────────── */
+.hidden { display: none !important; }
