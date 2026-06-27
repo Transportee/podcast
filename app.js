@@ -1,653 +1,396 @@
-/* ═══════════════════════════════════════════════════════════════
-   app.js — PodSync: Reproductor de Podcasts con Progreso Sincronizado
-   Arquitectura: UI · Validación · Persistencia · Feedback
-═══════════════════════════════════════════════════════════════ */
+/**
+ * app.js — Minecraft Podcast Player
+ * ============================================================
+ * Lógica completa:
+ *  • Carga progreso del backend al seleccionar episodio
+ *  • Guarda progreso cada 5 s durante reproducción
+ *  • Guarda inmediatamente al pausar / cerrar pestaña
+ *  • Actualiza UI: disco giratorio, XP bar, tiempos, toast
+ * ============================================================
+ */
 
 'use strict';
 
-/* ─────────────────────────────────────────────────────────────
-   MÓDULO 1 — MOCK DATA / DATOS SEMILLA
-   Define los datos iniciales que se cargarán en localStorage
-   si las "tablas" aún no existen.
-───────────────────────────────────────────────────────────── */
-const SEED_DATA = {
+// ── URLs del backend ──────────────────────────────────────────
+const BACKEND_SAVE = 'guardar_progreso.php';
+const BACKEND_GET  = 'obtener_progreso.php';
 
-  users: [
-    { id: 'User123', name: 'Martín García',  avatar: '🧑‍💻' },
-    { id: 'User456', name: 'Laura Méndez',   avatar: '👩‍🎨' },
-  ],
+// ── Intervalo de guardado automático (ms) ────────────────────
+const SAVE_INTERVAL_MS = 5000;
 
-  episodes: [
-    {
-      id: 'EP-01',
-      podcastName: 'Hablemos de Tech',
-      title: 'El auge de la IA Generativa en 2025',
-      duration: 1800,   // 30 min en segundos
-      cover: '🤖',
-      description: 'GPT-5, Claude 4, Gemini Ultra y el futuro del trabajo.',
-      date: '15 Jun 2025',
-    },
-    {
-      id: 'EP-02',
-      podcastName: 'Hablemos de Tech',
-      title: 'React 19 y el futuro del Frontend',
-      duration: 2700,   // 45 min
-      cover: '⚛️',
-      description: 'Server Components, Suspense y las nuevas APIs.',
-      date: '22 Jun 2025',
-    },
-    {
-      id: 'EP-03',
-      podcastName: 'Startups & Código',
-      title: 'De idea a MVP en 30 días',
-      duration: 3600,   // 60 min
-      cover: '🚀',
-      description: 'Historias reales de fundadores latinoamericanos.',
-      date: '1 Jul 2025',
-    },
-    {
-      id: 'EP-04',
-      podcastName: 'Startups & Código',
-      title: 'Microservicios vs Monolito: la verdad',
-      duration: 2400,   // 40 min
-      cover: '🏗️',
-      description: 'Cuándo escalar y cuándo no complicarse la vida.',
-      date: '8 Jul 2025',
-    },
-  ],
-
-  // Tabla de progreso — comienza vacía, se llena con el uso
-  progress: [],
+// ── Estado global ────────────────────────────────────────────
+const State = {
+  usuarioId:    1,
+  episodioId:   1,
+  episodios:    [],          // poblado desde DOM data-* attrs
+  saveTimer:    null,
+  lastSaved:    0,
+  syncPending:  false,
 };
 
-/* El usuario activo para esta demo */
-const ACTIVE_USER_ID = 'User123';
-
-
-/* ─────────────────────────────────────────────────────────────
-   MÓDULO 2 — PERSISTENCIA (localStorage como "Base de Datos")
-   Encapsula todas las lecturas y escrituras al storage.
-───────────────────────────────────────────────────────────── */
-const DB = {
-
-  /** Inicializa las "tablas" si localStorage está vacío */
-  init() {
-    if (!localStorage.getItem('podcasts_users')) {
-      localStorage.setItem('podcasts_users',    JSON.stringify(SEED_DATA.users));
-      localStorage.setItem('podcasts_episodes', JSON.stringify(SEED_DATA.episodes));
-      localStorage.setItem('podcasts_progress', JSON.stringify(SEED_DATA.progress));
-      UI.log('info', '🗄️  Base de datos inicializada con datos semilla.');
-    } else {
-      UI.log('info', '🗄️  Datos cargados desde localStorage.');
-    }
-  },
-
-  /** Lee una "tabla" desde localStorage y la parsea */
-  getTable(tableName) {
-    try {
-      return JSON.parse(localStorage.getItem(tableName)) || [];
-    } catch {
-      return [];
-    }
-  },
-
-  /** Persiste una "tabla" como JSON en localStorage */
-  setTable(tableName, data) {
-    localStorage.setItem(tableName, JSON.stringify(data));
-  },
-
-  /** Busca un usuario por id */
-  findUser(userId) {
-    return this.getTable('podcasts_users').find(u => u.id === userId) || null;
-  },
-
-  /** Busca un episodio por id */
-  findEpisode(episodeId) {
-    return this.getTable('podcasts_episodes').find(e => e.id === episodeId) || null;
-  },
-
-  /**
-   * UPSERT de progreso:
-   *   - Si ya existe el par (userId, episodeId) → actualiza currentTime + updatedAt
-   *   - Si no existe → inserta un nuevo registro
-   *
-   * @param {string} userId
-   * @param {string} episodeId
-   * @param {number} currentTime
-   * @returns {{ success: boolean, action: 'updated'|'inserted', record: object }|{ success: false, error: string }}
-   */
-  saveProgress(userId, episodeId, currentTime) {
-    const progress  = this.getTable('podcasts_progress');
-    const timestamp = new Date().toISOString();
-    const idx       = progress.findIndex(p => p.userId === userId && p.episodeId === episodeId);
-
-    if (idx !== -1) {
-      // ── UPDATE ──
-      progress[idx].currentTime = currentTime;
-      progress[idx].updatedAt   = timestamp;
-      this.setTable('podcasts_progress', progress);
-      return { success: true, action: 'updated', record: progress[idx] };
-    } else {
-      // ── INSERT ──
-      const newRecord = { userId, episodeId, currentTime, createdAt: timestamp, updatedAt: timestamp };
-      progress.push(newRecord);
-      this.setTable('podcasts_progress', progress);
-      return { success: true, action: 'inserted', record: newRecord };
-    }
-  },
-
-  /**
-   * Recupera el progreso guardado para un par (userId, episodeId)
-   * @returns {number} segundos de avance, o 0 si no existe
-   */
-  loadProgress(userId, episodeId) {
-    const progress = this.getTable('podcasts_progress');
-    const record   = progress.find(p => p.userId === userId && p.episodeId === episodeId);
-    return record ? record.currentTime : 0;
-  },
+// ── Referencias DOM ───────────────────────────────────────────
+const DOM = {
+  audio:        document.getElementById('audio-player'),
+  disk:         document.getElementById('mc-disk'),
+  diskLabel:    document.getElementById('disk-label'),
+  trackTitle:   document.getElementById('track-title'),
+  trackArtist:  document.getElementById('track-artist'),
+  syncInfo:     document.getElementById('sync-info'),
+  xpFill:       document.getElementById('xp-fill'),
+  xpCurrent:    document.getElementById('xp-current'),
+  xpTotal:      document.getElementById('xp-total'),
+  btnPlay:      document.getElementById('btn-play'),
+  btnPrev:      document.getElementById('btn-prev'),
+  btnNext:      document.getElementById('btn-next'),
+  xpTrack:      document.getElementById('xp-track'),
+  selUsuario:   document.getElementById('sel-usuario'),
+  selEpisodio:  document.getElementById('sel-episodio'),
+  led:          document.getElementById('jb-led'),
+  jbTitle:      document.getElementById('jb-title'),
+  toast:        document.getElementById('mc-toast'),
+  loading:      document.getElementById('mc-loading'),
+  playlist:     document.getElementById('playlist-list'),
 };
 
+// ── Helpers de tiempo ─────────────────────────────────────────
+function formatTime(secs) {
+  if (isNaN(secs) || secs < 0) return '0:00';
+  const m = Math.floor(secs / 60);
+  const s = Math.floor(secs % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
 
-/* ─────────────────────────────────────────────────────────────
-   MÓDULO 3 — VALIDACIÓN ("Backend" simulado)
-   Valida los datos antes de impactar la persistencia.
-───────────────────────────────────────────────────────────── */
-const Validator = {
+// ── Toast ─────────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg, duration = 3000) {
+  DOM.toast.textContent = msg;
+  DOM.toast.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => DOM.toast.classList.remove('show'), duration);
+}
 
-  /**
-   * Valida un guardado de progreso completo.
-   * @returns {{ valid: boolean, error?: string }}
-   */
-  validateSave(userId, episodeId, currentTime) {
+// ── Loading screen ────────────────────────────────────────────
+function setLoading(active) {
+  if (active) {
+    DOM.loading.classList.remove('hidden');
+  } else {
+    DOM.loading.classList.add('hidden');
+  }
+}
 
-    // Validación 1: currentTime debe ser número, >= 0 y < duración total
-    const episode = DB.findEpisode(episodeId);
-    if (!episode) {
-      return { valid: false, error: `Episodio "${episodeId}" no encontrado en la base de datos.` };
-    }
+// ── Actualizar UI del reproductor ─────────────────────────────
+function updateDiskColor(color) {
+  DOM.disk.style.setProperty('--disk-color', color);
+  DOM.diskLabel.style.background = color;
+}
 
-    if (typeof currentTime !== 'number' || isNaN(currentTime)) {
-      return { valid: false, error: 'El tiempo de reproducción no es un número válido.' };
-    }
+function setPlayState(playing) {
+  if (playing) {
+    DOM.disk.classList.add('spinning');
+    DOM.btnPlay.textContent = '⏸ PAUSA';
+    DOM.led.classList.add('active');
+  } else {
+    DOM.disk.classList.remove('spinning');
+    DOM.btnPlay.textContent = '▶ PLAY';
+    DOM.led.classList.remove('active');
+  }
+}
 
-    if (currentTime < 0) {
-      return { valid: false, error: `El tiempo no puede ser negativo (recibido: ${currentTime}s).` };
-    }
+function updateProgressUI(current, total) {
+  const pct = total > 0 ? Math.min((current / total) * 100, 100) : 0;
+  DOM.xpFill.style.width = pct + '%';
+  DOM.xpCurrent.textContent = formatTime(current);
+  DOM.xpTotal.textContent   = formatTime(total);
+}
 
-    if (currentTime >= episode.duration) {
-      return {
-        valid: false,
-        error: `El tiempo (${currentTime}s) supera la duración del episodio (${episode.duration}s).`,
-      };
-    }
+function setPlaylistActive(episodioId) {
+  const items = DOM.playlist.querySelectorAll('.playlist-item');
+  items.forEach(item => {
+    item.classList.toggle('active', parseInt(item.dataset.id) === episodioId);
+  });
+}
 
-    // Validación 2: el usuario debe existir en los datos semilla
-    const user = DB.findUser(userId);
-    if (!user) {
-      return { valid: false, error: `Usuario "${userId}" no registrado en el sistema.` };
-    }
+// ── Guardar progreso (Fetch POST) ─────────────────────────────
+async function saveProgress(tiempo) {
+  if (isNaN(tiempo) || tiempo < 0) return;
+  // Evitar guardados duplicados del mismo segundo
+  if (Math.abs(tiempo - State.lastSaved) < 0.5) return;
+  State.lastSaved = tiempo;
 
-    return { valid: true };
-  },
-};
-
-
-/* ─────────────────────────────────────────────────────────────
-   MÓDULO 4 — INTERFAZ DE USUARIO (UI)
-   Renderizado, actualización de DOM y feedback visual.
-───────────────────────────────────────────────────────────── */
-const UI = {
-
-  /** Renderiza la lista de episodios en el DOM */
-  renderEpisodeList(episodes, activeEpisodeId = null) {
-    const container = document.getElementById('episode-list');
-    container.innerHTML = '';
-
-    episodes.forEach(ep => {
-      const savedTime  = DB.loadProgress(ACTIVE_USER_ID, ep.id);
-      const pct        = Math.min((savedTime / ep.duration) * 100, 100).toFixed(1);
-      const isActive   = ep.id === activeEpisodeId;
-      const badgeClass = savedTime === 0 ? 'new' : pct >= 95 ? 'finished' : 'progress';
-      const badgeLabel = savedTime === 0 ? 'Nuevo'
-                       : pct >= 95       ? 'Terminado'
-                       : `${pct}%`;
-
-      const card = document.createElement('button');
-      card.className = `episode-card ${isActive ? 'active' : ''}`;
-      card.dataset.episodeId = ep.id;
-      card.onclick = () => App.loadEpisode(ep.id);
-
-      card.innerHTML = `
-        <div class="episode-cover">${ep.cover}</div>
-        <div class="flex-1 min-w-0">
-          <div class="episode-title">${ep.title}</div>
-          <div class="episode-meta">${ep.podcastName} · ${ep.date} · ${this.formatTime(ep.duration)}</div>
-          <div class="episode-progress-bar">
-            <div class="episode-progress-fill" style="width: ${pct}%"></div>
-          </div>
-        </div>
-        <span class="episode-badge ${badgeClass}">${badgeLabel}</span>
-      `;
-
-      container.appendChild(card);
+  try {
+    const res = await fetch(BACKEND_SAVE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        usuario_id:      State.usuarioId,
+        episodio_id:     State.episodioId,
+        tiempo_segundos: parseFloat(tiempo.toFixed(2)),
+      }),
     });
-  },
-
-  /** Actualiza la UI del reproductor con el episodio activo */
-  loadPlayerUI(episode, currentTime) {
-    document.getElementById('player-podcast-name').textContent  = episode.podcastName;
-    document.getElementById('player-episode-title').textContent = episode.title;
-    document.getElementById('player-episode-meta').textContent  =
-      `${episode.date} · ${this.formatTime(episode.duration)}`;
-    document.getElementById('player-cover').textContent         = episode.cover;
-    document.getElementById('time-total').textContent           = this.formatTime(episode.duration);
-
-    document.getElementById('player-card').classList.remove('hidden');
-    document.getElementById('empty-state').classList.add('hidden');
-
-    this.updateProgress(currentTime, episode.duration);
-  },
-
-  /** Actualiza barra de progreso y tiempo */
-  updateProgress(currentTime, duration) {
-    const pct = duration > 0 ? (currentTime / duration) * 100 : 0;
-    document.getElementById('progress-bar-fill').style.width = `${Math.min(pct, 100)}%`;
-    document.getElementById('time-current').textContent = this.formatTime(currentTime);
-  },
-
-  /** Cambia ícono Play/Pause */
-  setPlayIcon(isPlaying) {
-    const icon = document.getElementById('play-icon');
-    icon.setAttribute('data-lucide', isPlaying ? 'pause' : 'play');
-    lucide.createIcons();
-  },
-
-  /** Actualiza el botón de dispositivo activo */
-  setActiveDevice(deviceId) {
-    document.querySelectorAll('.device-btn').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.device === deviceId);
-    });
-  },
-
-  /** Muestra / oculta el indicador de sincronización del header */
-  showSyncIndicator(text = 'Progreso sincronizado') {
-    const el   = document.getElementById('sync-indicator');
-    const txt  = document.getElementById('sync-text');
-    txt.textContent = text;
-    el.classList.remove('hidden');
-    clearTimeout(this._syncTimer);
-    this._syncTimer = setTimeout(() => el.classList.add('hidden'), 3000);
-  },
-
-  /**
-   * Agrega una entrada al log de actividad
-   * @param {'save'|'load'|'error'|'info'} type
-   */
-  log(type, message) {
-    const container = document.getElementById('activity-log');
-    if (!container) return;
-
-    const now   = new Date();
-    const hh    = String(now.getHours()).padStart(2, '0');
-    const mm    = String(now.getMinutes()).padStart(2, '0');
-    const ss    = String(now.getSeconds()).padStart(2, '0');
-    const time  = `${hh}:${mm}:${ss}`;
-
-    const icons = { save: '💾', load: '📥', error: '⚠️', info: 'ℹ️' };
-
-    const entry = document.createElement('div');
-    entry.className = `log-entry ${type}`;
-    entry.innerHTML = `
-      <span class="log-time">${time}</span>
-      <span>${icons[type] || '·'} ${message}</span>
-    `;
-
-    container.prepend(entry);
-
-    // Mantener máximo 20 entradas
-    while (container.children.length > 20) {
-      container.removeChild(container.lastChild);
+    const data = await res.json();
+    if (data.status === 'ok') {
+      DOM.syncInfo.textContent = `✓ Sync ${formatTime(tiempo)} · ${new Date().toLocaleTimeString()}`;
     }
-  },
+  } catch (err) {
+    console.warn('[Podcast] Error al guardar progreso:', err);
+  }
+}
 
-  /** Convierte segundos a formato mm:ss o h:mm:ss */
-  formatTime(secs) {
-    secs = Math.floor(secs);
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    const s = secs % 60;
-    if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-    return `${m}:${String(s).padStart(2, '0')}`;
-  },
-};
+// ── Guardar con intervalo ─────────────────────────────────────
+function startAutoSave() {
+  stopAutoSave();
+  State.saveTimer = setInterval(() => {
+    if (!DOM.audio.paused) {
+      saveProgress(DOM.audio.currentTime);
+    }
+  }, SAVE_INTERVAL_MS);
+}
 
+function stopAutoSave() {
+  clearInterval(State.saveTimer);
+  State.saveTimer = null;
+}
 
-/* ─────────────────────────────────────────────────────────────
-   MÓDULO 5 — CONTROLADOR PRINCIPAL (App)
-   Orquesta UI + Validación + Persistencia + intervalos.
-───────────────────────────────────────────────────────────── */
-const App = {
+// ── Cargar progreso del backend ───────────────────────────────
+async function loadProgress(usuarioId, episodioId) {
+  setLoading(true);
+  try {
+    const url = `${BACKEND_GET}?usuario_id=${usuarioId}&episodio_id=${episodioId}`;
+    const res  = await fetch(url);
+    const data = await res.json();
 
-  // ── Estado interno ──────────────────────────────
-  state: {
-    activeEpisodeId: null,
-    currentTime:     0,
-    isPlaying:       false,
-    speed:           1,
-    activeDevice:    'mobile',
-    duration:        0,
-  },
+    if (data.status === 'error') {
+      showToast('⚠ Error: ' + data.mensaje, 4000);
+      setLoading(false);
+      return;
+    }
 
-  // Timers
-  _playbackInterval: null,  // simula el avance del audio
-  _autoSaveInterval: null,  // guarda progreso cada 5 segundos
+    // Actualizar audio source
+    DOM.audio.src = data.url_audio;
+    DOM.audio.load();
 
-  // ── Inicialización ──────────────────────────────
-  init() {
-    // 1. Inicializa la "base de datos"
-    DB.init();
+    // Actualizar UI
+    DOM.trackTitle.textContent  = data.titulo   || '—';
+    DOM.trackArtist.textContent = data.artista  || '';
+    DOM.jbTitle.textContent     = `♪ ${data.titulo}`;
+    updateDiskColor(data.color_disco || '#c0392b');
+    updateProgressUI(data.tiempo_segundos, data.duracion_segundos);
+    setPlaylistActive(episodioId);
 
-    // 2. Renderiza lista de episodios
-    const episodes = DB.getTable('podcasts_episodes');
-    UI.renderEpisodeList(episodes);
+    // Sync info
+    if (data.status === 'ok') {
+      const t = formatTime(data.tiempo_segundos);
+      DOM.syncInfo.textContent = `↺ Retomando desde ${t} · ${data.ultima_escucha || ''}`;
+      showToast(`♪ Retomando desde ${t}`, 3500);
+    } else {
+      DOM.syncInfo.textContent = '★ Primer escucha';
+    }
 
-    // 3. Activa los íconos de Lucide
-    lucide.createIcons();
+    // Cuando el audio esté listo, saltar al tiempo guardado
+    const seekAndGo = () => {
+      if (data.tiempo_segundos > 1) {
+        DOM.audio.currentTime = data.tiempo_segundos;
+      }
+      setLoading(false);
+      DOM.audio.removeEventListener('canplay', seekAndGo);
+    };
+    DOM.audio.addEventListener('canplay', seekAndGo, { once: true });
 
-    // 4. Arranca el autosave cada 5 segundos
-    this._autoSaveInterval = setInterval(() => {
-      if (this.state.isPlaying && this.state.activeEpisodeId) {
-        this._persistProgress('auto');
+    // Timeout de seguridad por si canplay no dispara (ej: error de CORS en audio)
+    setTimeout(() => {
+      if (DOM.loading && !DOM.loading.classList.contains('hidden')) {
+        setLoading(false);
+        DOM.audio.currentTime = data.tiempo_segundos || 0;
       }
     }, 5000);
 
-    UI.log('info', `👤 Usuario activo: ${ACTIVE_USER_ID}`);
-    UI.log('info', '✅ App inicializada. Seleccioná un episodio.');
-  },
+    State.lastSaved = data.tiempo_segundos || 0;
 
-  // ── Cargar un episodio ──────────────────────────
-  loadEpisode(episodeId) {
-    const episode = DB.findEpisode(episodeId);
-    if (!episode) {
-      UI.log('error', `Episodio "${episodeId}" no encontrado.`);
-      return;
-    }
+  } catch (err) {
+    console.error('[Podcast] Error al cargar progreso:', err);
+    showToast('⚠ Sin conexión al servidor', 4000);
+    setLoading(false);
+  }
+}
 
-    // Si había uno reproduciéndose, pausarlo y guardar
-    if (this.state.activeEpisodeId && this.state.isPlaying) {
-      this._persistProgress('auto');
-    }
-    this._stopPlayback();
+// ── Evento: cambio de episodio (selector o playlist) ─────────
+async function onEpisodioChange(newEpisodioId) {
+  // Guardar progreso del episodio actual antes de cambiar
+  if (!DOM.audio.paused) {
+    await saveProgress(DOM.audio.currentTime);
+    DOM.audio.pause();
+    setPlayState(false);
+    stopAutoSave();
+  }
 
-    // Recupera el progreso guardado para este usuario+episodio+dispositivo
-    const savedTime = DB.loadProgress(ACTIVE_USER_ID, episodeId);
+  State.episodioId = newEpisodioId;
+  DOM.selEpisodio.value = newEpisodioId;
 
-    this.state.activeEpisodeId = episodeId;
-    this.state.currentTime     = savedTime;
-    this.state.duration        = episode.duration;
-    this.state.isPlaying       = false;
+  await loadProgress(State.usuarioId, State.episodioId);
+}
 
-    UI.loadPlayerUI(episode, savedTime);
-    UI.setPlayIcon(false);
-    lucide.createIcons();
+// ── Evento: cambio de usuario ─────────────────────────────────
+async function onUsuarioChange(newUsuarioId) {
+  if (!DOM.audio.paused) {
+    await saveProgress(DOM.audio.currentTime);
+    DOM.audio.pause();
+    setPlayState(false);
+    stopAutoSave();
+  }
+  State.usuarioId = newUsuarioId;
+  await loadProgress(State.usuarioId, State.episodioId);
+}
 
-    // Re-renderiza lista marcando el activo
-    const episodes = DB.getTable('podcasts_episodes');
-    UI.renderEpisodeList(episodes, episodeId);
+// ── Navegación prev/next ──────────────────────────────────────
+function getEpisodioIds() {
+  return Array.from(DOM.selEpisodio.options).map(o => parseInt(o.value)).filter(Boolean);
+}
 
-    UI.log(
-      'load',
-      `📥 "${episode.title}" cargado — retomando en ${UI.formatTime(savedTime)} (${this.state.activeDevice})`
-    );
-  },
+async function playNext() {
+  const ids  = getEpisodioIds();
+  const idx  = ids.indexOf(State.episodioId);
+  const next = ids[(idx + 1) % ids.length];
+  if (next !== State.episodioId) {
+    await onEpisodioChange(next);
+    DOM.audio.play().catch(() => {});
+  }
+}
 
-  // ── Play / Pause ────────────────────────────────
-  togglePlayPause() {
-    if (!this.state.activeEpisodeId) return;
+async function playPrev() {
+  const ids  = getEpisodioIds();
+  const idx  = ids.indexOf(State.episodioId);
+  const prev = ids[(idx - 1 + ids.length) % ids.length];
+  if (prev !== State.episodioId) {
+    await onEpisodioChange(prev);
+    DOM.audio.play().catch(() => {});
+  }
+}
 
-    this.state.isPlaying = !this.state.isPlaying;
-    UI.setPlayIcon(this.state.isPlaying);
-    lucide.createIcons();
-
-    if (this.state.isPlaying) {
-      this._startPlayback();
-      UI.log('info', '▶️  Reproducción iniciada.');
-    } else {
-      this._stopPlayback();
-      this._persistProgress('manual');
-    }
-  },
-
-  // ── Skip ────────────────────────────────────────
-  skipBack() {
-    if (!this.state.activeEpisodeId) return;
-    this.state.currentTime = Math.max(0, this.state.currentTime - 15);
-    UI.updateProgress(this.state.currentTime, this.state.duration);
-  },
-
-  skipForward() {
-    if (!this.state.activeEpisodeId) return;
-    this.state.currentTime = Math.min(this.state.duration - 1, this.state.currentTime + 30);
-    UI.updateProgress(this.state.currentTime, this.state.duration);
-  },
-
-  // ── Seek (clic en barra de progreso) ────────────
-  seekTo(event) {
-    if (!this.state.activeEpisodeId) return;
-    const bar  = document.getElementById('progress-bar-container');
-    const rect = bar.getBoundingClientRect();
-    const pct  = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    this.state.currentTime = Math.floor(pct * this.state.duration);
-    UI.updateProgress(this.state.currentTime, this.state.duration);
-    UI.log('info', `⏩ Saltando a ${UI.formatTime(this.state.currentTime)}`);
-  },
-
-  // ── Velocidad de reproducción ───────────────────
-  cycleSpeed() {
-    const speeds = [1, 1.25, 1.5, 1.75, 2, 0.75];
-    const idx    = speeds.indexOf(this.state.speed);
-    this.state.speed = speeds[(idx + 1) % speeds.length];
-    document.getElementById('speed-label').textContent = `${this.state.speed}×`;
-    UI.log('info', `⚡ Velocidad: ${this.state.speed}×`);
-  },
-
-  // ── Cambio de dispositivo ───────────────────────
-  switchDevice(deviceId) {
-    if (deviceId === this.state.activeDevice) return;
-
-    // Pausa y guarda antes de cambiar
-    if (this.state.isPlaying) {
-      this._stopPlayback();
-      this.state.isPlaying = false;
-      UI.setPlayIcon(false);
-      lucide.createIcons();
-      this._persistProgress('auto');
-    }
-
-    this.state.activeDevice = deviceId;
-    UI.setActiveDevice(deviceId);
-    UI.log('info', `📱 Cambiando a dispositivo: ${deviceId}`);
-
-    // Si hay episodio activo, recarga el progreso desde el storage
-    if (this.state.activeEpisodeId) {
-      const savedTime = DB.loadProgress(ACTIVE_USER_ID, this.state.activeEpisodeId);
-      this.state.currentTime = savedTime;
-      UI.updateProgress(savedTime, this.state.duration);
-
-      Swal.fire({
-        icon:             'success',
-        title:            `Dispositivo: ${this._deviceLabel(deviceId)}`,
-        text:             `Retomando desde ${UI.formatTime(savedTime)} 🔄`,
-        background:       '#111118',
-        color:            '#f1f5f9',
-        iconColor:        '#22c55e',
-        confirmButtonColor: '#22c55e',
-        timer:            2200,
-        timerProgressBar: true,
-        showConfirmButton: false,
-        toast:            true,
-        position:         'top-end',
-      });
-
-      UI.log('load', `📱 Sincronizado en "${deviceId}" → ${UI.formatTime(savedTime)}`);
-    }
-  },
-
-  // ── Guardar progreso manualmente ────────────────
-  saveProgressManual() {
-    if (!this.state.activeEpisodeId) return;
-    this._persistProgress('manual');
-  },
-
-  // ── Simular cierre de app ───────────────────────
-  closeApp() {
-    if (!this.state.activeEpisodeId) {
-      Swal.fire({
-        icon: 'info', title: 'No hay episodio activo',
-        background: '#111118', color: '#f1f5f9',
-        confirmButtonColor: '#22c55e', timer: 1500, showConfirmButton: false,
-        toast: true, position: 'top-end',
-      });
-      return;
-    }
-
-    this._stopPlayback();
-    this.state.isPlaying = false;
-    UI.setPlayIcon(false);
-    lucide.createIcons();
-
-    this._persistProgress('manual');
-
-    Swal.fire({
-      icon:             'warning',
-      title:            '📴 App cerrada (simulado)',
-      html:             `Progreso guardado en <strong>${UI.formatTime(this.state.currentTime)}</strong>.<br>
-                         Al volver al mismo episodio desde cualquier dispositivo, retomará aquí.`,
-      background:       '#111118',
-      color:            '#f1f5f9',
-      iconColor:        '#fbbf24',
-      confirmButtonText: 'Entendido',
-      confirmButtonColor: '#22c55e',
-    });
-
-    UI.log('info', `📴 App cerrada. Progreso guardado en ${UI.formatTime(this.state.currentTime)}.`);
-  },
-
-  // ── INTERNAL: iniciar playback simulado ─────────
-  _startPlayback() {
-    this._stopPlayback();
-    this._playbackInterval = setInterval(() => {
-      this.state.currentTime += this.state.speed;
-
-      // Al llegar al final del episodio
-      if (this.state.currentTime >= this.state.duration) {
-        this.state.currentTime = this.state.duration - 1;
-        this._stopPlayback();
-        this.state.isPlaying = false;
-        UI.setPlayIcon(false);
-        lucide.createIcons();
-        this._persistProgress('auto');
-        UI.log('info', '🏁 Episodio completado.');
-
-        Swal.fire({
-          icon: 'success', title: '🎉 ¡Episodio terminado!',
-          background: '#111118', color: '#f1f5f9',
-          iconColor: '#22c55e', confirmButtonColor: '#22c55e',
-          timer: 2500, showConfirmButton: false, toast: true, position: 'top-end',
-        });
-      }
-
-      UI.updateProgress(this.state.currentTime, this.state.duration);
-      // Actualiza mini-barra en la lista
-      this._refreshEpisodeCardProgress();
-    }, 1000); // 1 tick = 1 segundo real
-  },
-
-  _stopPlayback() {
-    if (this._playbackInterval) {
-      clearInterval(this._playbackInterval);
-      this._playbackInterval = null;
-    }
-  },
-
-  // ── INTERNAL: guardar y mostrar feedback ─────────
-  _persistProgress(trigger) {
-    const { activeEpisodeId, currentTime } = this.state;
-    if (!activeEpisodeId) return;
-
-    // Validar antes de persistir
-    const validation = Validator.validateSave(ACTIVE_USER_ID, activeEpisodeId, currentTime);
-
-    if (!validation.valid) {
-      UI.log('error', `❌ Validación fallida: ${validation.error}`);
-      Swal.fire({
-        icon: 'error', title: 'Error de validación',
-        text: validation.error,
-        background: '#111118', color: '#f1f5f9',
-        iconColor: '#f87171', confirmButtonColor: '#22c55e',
-      });
-      return;
-    }
-
-    // Persistir en localStorage
-    const result  = DB.saveProgress(ACTIVE_USER_ID, activeEpisodeId, currentTime);
-    const episode = DB.findEpisode(activeEpisodeId);
-    const action  = result.action === 'updated' ? 'actualizado' : 'guardado';
-
-    if (trigger === 'auto') {
-      // Feedback sutil: solo el indicador del header
-      UI.showSyncIndicator(`Progreso sincronizado en la nube local…`);
-    } else {
-      // Feedback explícito: toast SweetAlert2
-      Swal.fire({
-        icon:             'success',
-        title:            '☁️ Progreso sincronizado',
-        html:             `<span style="color:#94a3b8;font-size:0.875rem">
-                             <strong style="color:#4ade80">${episode.title}</strong><br>
-                             Guardado en <strong>${UI.formatTime(currentTime)}</strong>
-                           </span>`,
-        background:       '#111118',
-        color:            '#f1f5f9',
-        iconColor:        '#22c55e',
-        confirmButtonColor: '#22c55e',
-        timer:            2000,
-        timerProgressBar: true,
-        showConfirmButton: false,
-        toast:            true,
-        position:         'top-end',
-      });
-      UI.showSyncIndicator('Progreso guardado');
-    }
-
-    UI.log('save', `💾 Progreso ${action} → ${UI.formatTime(currentTime)} [${trigger}]`);
-
-    // Re-renderiza mini-progreso de la lista
-    const episodes = DB.getTable('podcasts_episodes');
-    UI.renderEpisodeList(episodes, activeEpisodeId);
-    lucide.createIcons();
-  },
-
-  // ── INTERNAL: actualiza mini-barra del card activo ──
-  _refreshEpisodeCardProgress() {
-    const card = document.querySelector(`.episode-card[data-episode-id="${this.state.activeEpisodeId}"]`);
-    if (!card) return;
-    const fill = card.querySelector('.episode-progress-fill');
-    if (fill) {
-      const pct = (this.state.currentTime / this.state.duration) * 100;
-      fill.style.width = `${Math.min(pct, 100).toFixed(1)}%`;
-    }
-  },
-
-  // ── INTERNAL: label legible del dispositivo ─────
-  _deviceLabel(deviceId) {
-    return { mobile: '📱 Celular', tablet: '📟 Tablet', desktop: '💻 Computadora' }[deviceId] || deviceId;
-  },
-};
-
-
-/* ─────────────────────────────────────────────────────────────
-   ARRANQUE — Cuando el DOM esté listo
-───────────────────────────────────────────────────────────── */
-document.addEventListener('DOMContentLoaded', () => {
-  App.init();
+// ── Seek (clic en XP bar) ────────────────────────────────────
+DOM.xpTrack.addEventListener('click', (e) => {
+  const rect  = DOM.xpTrack.getBoundingClientRect();
+  const ratio = (e.clientX - rect.left) / rect.width;
+  const duration = DOM.audio.duration;
+  if (isNaN(duration) || duration <= 0) return;
+  const newTime = ratio * duration;
+  DOM.audio.currentTime = newTime;
+  updateProgressUI(newTime, duration);
+  saveProgress(newTime);
 });
+
+// ── Clic en el disco = Play/Pausa ────────────────────────────
+DOM.disk.addEventListener('click', () => DOM.btnPlay.click());
+
+// ── Botón Play / Pausa ───────────────────────────────────────
+DOM.btnPlay.addEventListener('click', async () => {
+  if (!DOM.audio.src || DOM.audio.src === window.location.href) {
+    showToast('⚠ Selecciona un episodio primero');
+    return;
+  }
+
+  if (DOM.audio.paused) {
+    try {
+      await DOM.audio.play();
+    } catch (err) {
+      showToast('⚠ No se pudo reproducir el audio');
+      console.error(err);
+    }
+  } else {
+    DOM.audio.pause();
+  }
+});
+
+// ── Botones prev / next ───────────────────────────────────────
+DOM.btnPrev.addEventListener('click', playPrev);
+DOM.btnNext.addEventListener('click', playNext);
+
+// ── Selectores de usuario / episodio ────────────────────────
+DOM.selUsuario.addEventListener('change', () => {
+  onUsuarioChange(parseInt(DOM.selUsuario.value));
+});
+
+DOM.selEpisodio.addEventListener('change', () => {
+  onEpisodioChange(parseInt(DOM.selEpisodio.value));
+});
+
+// ── Playlist items ────────────────────────────────────────────
+DOM.playlist.querySelectorAll('.playlist-item').forEach(item => {
+  item.addEventListener('click', async () => {
+    const id = parseInt(item.dataset.id);
+    if (id === State.episodioId) {
+      DOM.btnPlay.click();
+      return;
+    }
+    await onEpisodioChange(id);
+    DOM.audio.play().catch(() => {});
+  });
+});
+
+// ── Eventos del elemento <audio> ─────────────────────────────
+DOM.audio.addEventListener('play', () => {
+  setPlayState(true);
+  startAutoSave();
+});
+
+DOM.audio.addEventListener('pause', async () => {
+  setPlayState(false);
+  stopAutoSave();
+  await saveProgress(DOM.audio.currentTime);
+});
+
+DOM.audio.addEventListener('ended', async () => {
+  setPlayState(false);
+  stopAutoSave();
+  // Guardar al final (100%)
+  await saveProgress(DOM.audio.duration || 0);
+  showToast('✔ Episodio terminado · ¡GG!', 4000);
+  // Avanzar automáticamente al siguiente
+  setTimeout(playNext, 2000);
+});
+
+DOM.audio.addEventListener('timeupdate', () => {
+  const cur  = DOM.audio.currentTime;
+  const tot  = DOM.audio.duration || 0;
+  updateProgressUI(cur, tot);
+});
+
+DOM.audio.addEventListener('error', (e) => {
+  console.error('[Podcast] Audio error:', e);
+  setPlayState(false);
+  showToast('⚠ Error al cargar el audio', 4000);
+  setLoading(false);
+});
+
+// ── Guardar al cerrar / cambiar de pestaña ───────────────────
+window.addEventListener('beforeunload', () => {
+  if (!DOM.audio.paused && DOM.audio.currentTime > 0) {
+    // navigator.sendBeacon para garantizar el envío
+    const payload = JSON.stringify({
+      usuario_id:      State.usuarioId,
+      episodio_id:     State.episodioId,
+      tiempo_segundos: parseFloat(DOM.audio.currentTime.toFixed(2)),
+    });
+    const blob = new Blob([payload], { type: 'application/json' });
+    navigator.sendBeacon(BACKEND_SAVE, blob);
+  }
+});
+
+// ── Visibilidad de pestaña ────────────────────────────────────
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && !DOM.audio.paused) {
+    saveProgress(DOM.audio.currentTime);
+  }
+});
+
+// ── Inicialización ────────────────────────────────────────────
+(async function init() {
+  // Leer valores iniciales del DOM
+  State.usuarioId  = parseInt(DOM.selUsuario.value)  || 1;
+  State.episodioId = parseInt(DOM.selEpisodio.value) || 1;
+
+  // Cargar progreso inicial
+  await loadProgress(State.usuarioId, State.episodioId);
+
+  // Pequeño delay para mostrar la pantalla de carga
+  setTimeout(() => setLoading(false), 600);
+})();
